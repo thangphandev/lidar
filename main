@@ -1,51 +1,90 @@
-import matplotlib
-matplotlib.use('TkAgg')
-import matplotlib.pyplot as plt
-import numpy as np
-from rplidar import RPLidar
+import math
+import pygame
+import time
+from pyrplidar import PyRPlidar
 
-PORT_NAME = 'COM10'
+# --- CẤU HÌNH ---
+WIDTH, HEIGHT = 700, 700 # Giảm nhẹ độ phân giải để đỡ tốn RAM đồ họa
+CENTER = (WIDTH // 2, HEIGHT // 2)
+MAX_DISTANCE = 3000 
+SCALE = (WIDTH // 2) / MAX_DISTANCE
 
-def draw_fast_map():
-    # Khởi tạo với baudrate chuẩn
-    lidar = RPLidar(PORT_NAME, baudrate=115200)
-    
-    plt.ion()
-    fig, ax = plt.subplots(figsize=(8, 8))
-    ax.set_aspect('equal')
-    ax.set_xlim(-4000, 4000)
-    ax.set_ylim(-4000, 4000)
-    
-    # Dùng line plot thay vì scatter sẽ nhanh hơn rất nhiều trong một số backend
-    point_plot, = ax.plot([], [], 'bo', ms=1) 
+# Màu sắc
+BLACK = (0, 0, 0)
+GREEN = (0, 255, 0)
+DARK_GREEN = (0, 60, 0)
 
-    x_data, y_data = [], []
+def run_radar_optimized():
+    pygame.init()
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    pygame.display.set_caption("RPi 3B+ Optimized Radar")
+    clock = pygame.time.Clock()
 
+    # Tối ưu 1: Vẽ sẵn Background (Vòng tròn và Grid) ra một Surface riêng
+    background = pygame.Surface((WIDTH, HEIGHT))
+    background.fill(BLACK)
+    for r in range(500, MAX_DISTANCE + 1, 1000): # Vẽ ít vòng hơn để thoáng máy
+        pygame.draw.circle(background, DARK_GREEN, CENTER, int(r * SCALE), 1)
+    # Vẽ trục X-Y
+    pygame.draw.line(background, DARK_GREEN, (0, HEIGHT//2), (WIDTH, HEIGHT//2), 1)
+    pygame.draw.line(background, DARK_GREEN, (WIDTH//2, 0), (WIDTH//2, HEIGHT), 1)
+
+    lidar = PyRPlidar()
     try:
-        # iter_measures trả về: (is_new_scan, quality, angle, distance)
-        for _, _, angle, distance in lidar.iter_measures():
-            if distance > 0:
-                theta = np.radians(angle)
-                x = distance * np.cos(theta)
-                y = distance * np.sin(theta)
-                
-                x_data.append(x)
-                y_data.append(y)
+        # A1M8 hoạt động ổn định nhất ở 115200 trên Pi
+        lidar.connect(port="/dev/ttyUSB0", baudrate=115200, timeout=3)
+        lidar.set_motor_pwm(400) # Giảm tốc độ quay để CPU có thời gian thở
+        time.sleep(1)
+        scan_generator = lidar.start_scan()
+    except Exception as e:
+        print(f"Lỗi: {e}")
+        return
 
-            # Cập nhật hình ảnh sau mỗi 50 điểm để tối ưu CPU
-            if len(x_data) > 50:
-                # Chỉ giữ lại 500 điểm gần nhất để quan sát mượt mà
-                plot_x = x_data[-500:]
-                plot_y = y_data[-500:]
+    lidar_map = {}
+    last_draw_time = time.time()
+
+    running = True
+    try:
+        for scan in scan_generator():
+            # Xử lý sự kiện hệ thống (Quit)
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+
+            # Cập nhật dữ liệu vào bộ nhớ
+            if 0 < scan.distance < MAX_DISTANCE:
+                angle_int = int(scan.angle)
+                lidar_map[angle_int] = scan.distance
+
+            # Tối ưu 2: Chỉ vẽ lại màn hình sau mỗi 0.1 giây (10 FPS) 
+            # 10 FPS là đủ để nhìn và giúp CPU Pi 3B+ giảm tải 70% so với 60 FPS
+            current_time = time.time()
+            if current_time - last_draw_time > 0.1:
+                screen.blit(background, (0, 0)) # Dán đè background cũ thay vì fill BLACK
                 
-                point_plot.set_data(plot_x, plot_y)
-                plt.pause(0.00001) # Trễ siêu nhỏ
-                
+                # Tối ưu 3: Chỉ vẽ các điểm hiện có trong Map
+                for ang, dist in lidar_map.items():
+                    # Tính toán tọa độ nhanh
+                    rad = math.radians(ang - 90)
+                    r = dist * SCALE
+                    px = CENTER[0] + int(r * math.cos(rad))
+                    py = CENTER[1] + int(r * math.sin(rad))
+                    
+                    # Vẽ điểm nhỏ (size 3) để tăng tốc độ render
+                    pygame.draw.circle(screen, GREEN, (px, py), 3)
+
+                pygame.display.flip()
+                last_draw_time = current_time
+
+            if not running: break
+
     except KeyboardInterrupt:
-        print("Đang dừng...")
+        pass
     finally:
         lidar.stop()
+        lidar.set_motor_pwm(0)
         lidar.disconnect()
+        pygame.quit()
 
-if __name__ == '__main__':
-    draw_fast_map()
+if __name__ == "__main__":
+    run_radar_optimized()
