@@ -1,0 +1,51 @@
+import matplotlib
+matplotlib.use('TkAgg')
+import matplotlib.pyplot as plt
+import numpy as np
+from rplidar import RPLidar
+
+PORT_NAME = 'COM10'
+
+def draw_fast_map():
+    # Khởi tạo với baudrate chuẩn
+    lidar = RPLidar(PORT_NAME, baudrate=115200)
+    
+    plt.ion()
+    fig, ax = plt.subplots(figsize=(8, 8))
+    ax.set_aspect('equal')
+    ax.set_xlim(-4000, 4000)
+    ax.set_ylim(-4000, 4000)
+    
+    # Dùng line plot thay vì scatter sẽ nhanh hơn rất nhiều trong một số backend
+    point_plot, = ax.plot([], [], 'bo', ms=1) 
+
+    x_data, y_data = [], []
+
+    try:
+        # iter_measures trả về: (is_new_scan, quality, angle, distance)
+        for _, _, angle, distance in lidar.iter_measures():
+            if distance > 0:
+                theta = np.radians(angle)
+                x = distance * np.cos(theta)
+                y = distance * np.sin(theta)
+                
+                x_data.append(x)
+                y_data.append(y)
+
+            # Cập nhật hình ảnh sau mỗi 50 điểm để tối ưu CPU
+            if len(x_data) > 50:
+                # Chỉ giữ lại 500 điểm gần nhất để quan sát mượt mà
+                plot_x = x_data[-500:]
+                plot_y = y_data[-500:]
+                
+                point_plot.set_data(plot_x, plot_y)
+                plt.pause(0.00001) # Trễ siêu nhỏ
+                
+    except KeyboardInterrupt:
+        print("Đang dừng...")
+    finally:
+        lidar.stop()
+        lidar.disconnect()
+
+if __name__ == '__main__':
+    draw_fast_map()
